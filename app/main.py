@@ -199,6 +199,16 @@ def query(request: QueryRequest):
         }
     except Exception as e:
         logfire.error(f"❌ Backend Execution Failed: {e}")
+        # Keep an upstream throttle distinguishable from an application
+        # failure. The evaluation client uses this signal to back off rather
+        # than marking a valid sample as failed.
+        error_text = str(e).lower()
+        if "rate_limit" in error_text or "rate limit" in error_text or "429" in error_text:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="The language-model provider is temporarily rate limiting requests. Retry shortly.",
+                headers={"Retry-After": "30"},
+            ) from e
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Unable to process the request. Please try again later.",

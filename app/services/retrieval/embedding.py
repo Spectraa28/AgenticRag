@@ -1,14 +1,36 @@
 import time
+import os
+import re
 import logfire
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from app.config import settings
 
-BATCH_SIZE = 50
+# The free Gemini embedding quota is easy to exhaust with a 50-chunk burst.
+# Smaller, paced batches make local ingestion dependable (and resumable).
+BATCH_SIZE = int(os.getenv("GEMINI_EMBED_BATCH_SIZE", "10"))
+MIN_BATCH_INTERVAL_SECONDS = float(os.getenv("GEMINI_EMBED_BATCH_INTERVAL_SECONDS", "4"))
+MAX_RATE_LIMIT_RETRIES = 5
 _GEMINI_DIM = 3072
 _FALLBACK_DIM = 768  
 
 _active_model = None
 _model_type: str | None = None
+_next_gemini_request_at = 0.0
+
+
+def _provider_retry_delay(error: Exception, attempt: int) -> float:
+    """Use Google's supplied cooldown when present, with exponential fallback."""
+    match = re.search(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", str(error))
+    provider_delay = float(match.group(1)) if match else 0.0
+    return max(provider_delay, float(2 ** attempt))
+
+
+def _wait_for_gemini_slot() -> None:
+    global _next_gemini_request_at
+    wait = _next_gemini_request_at - time.monotonic()
+    if wait > 0:
+        logfire.info(f"Pacing Gemini embedding batch for {wait:.1f}s.")
+        time.sleep(wait)
 
 def _probe_gemini():
     """Try one embed call to verify gemini is reachable . Returns  model or None"""
@@ -52,25 +74,30 @@ def get_embedding_dim() -> int:
 
 
 def _embed_batch(batch: list[str]) -> list[list[float]]:
+    global _next_gemini_request_at
     if _model_type == "gemini":
-        # Exponential backoff: 1 s → 2 s → 4 s → 8 s (4 attempts total)
-        for attempt in range(4):
+        # Respect the free-tier throughput and the provider's RetryInfo hint.
+        for attempt in range(MAX_RATE_LIMIT_RETRIES):
             try:
-                return _active_model.embed_documents(batch)
+                _wait_for_gemini_slot()
+                embeddings = _active_model.embed_documents(batch)
+                _next_gemini_request_at = time.monotonic() + MIN_BATCH_INTERVAL_SECONDS
+                return embeddings
             except Exception as e:
                 err = str(e).lower()
                 is_rate_limit = any(x in err for x in ("429", "rate", "quota", "resource_exhausted"))
-                if is_rate_limit and attempt < 3:
-                    wait = 2 ** attempt
+                if is_rate_limit and attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                    wait = _provider_retry_delay(e, attempt)
+                    _next_gemini_request_at = time.monotonic() + wait
                     logfire.warning(
-                        f"Gemini rate limit hit — retrying in {wait}s "
-                        f"(attempt {attempt + 1}/4)."
+                        f"Gemini rate limit hit — retrying in {wait:g}s "
+                        f"(attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES})."
                     )
-                    time.sleep(wait)
+                    _wait_for_gemini_slot()
                 else:
                     logfire.error(f"Gemini embedding failed: {e}")
                     raise
-        raise RuntimeError("Gemini rate limit persisted after 4 attempts.")
+        raise RuntimeError(f"Gemini rate limit persisted after {MAX_RATE_LIMIT_RETRIES} attempts.")
     else:
         return _active_model.encode(batch, show_progress_bar=False).tolist()
 

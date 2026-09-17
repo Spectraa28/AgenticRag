@@ -4,11 +4,11 @@ import uuid
 import json
 import logfire
 
-from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
 from app.config import settings
 from app.services.retrieval.embedding import embed_texts , get_embedding_dim
+from app.services.retrieval.qdrant_client import get_qdrant_client
 from app.ingestion.loaders.pdf import parse_pdf
 from app.ingestion.loaders.html import parse_html
 from app.ingestion.loaders.text import parse_text
@@ -18,10 +18,7 @@ logfire.configure(service_name="enterprise-ingestion-service")
 
 PROCESSED_DATA_DIR = "processed_data"
 
-qdrant_client = QdrantClient(
-    url=settings.QDRANT_URL,
-    api_key=settings.QDRANT_API_KEY,
-)
+qdrant_client = get_qdrant_client()
 
 
 def _source_filter(source_type: str, filename: str) -> models.Filter:
@@ -45,6 +42,21 @@ def _assert_collection_dimension() -> None:
             f"but the active embedding model produces {active_size}. Re-ingest with --wipe "
             "after selecting one embedding provider."
         )
+
+
+def _ensure_collection() -> None:
+    """Create the collection on first document upload or ingestion run."""
+    if qdrant_client.collection_exists(settings.QDRANT_COLLECTION):
+        return
+    dim = get_embedding_dim()
+    qdrant_client.create_collection(
+        collection_name=settings.QDRANT_COLLECTION,
+        vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
+    )
+    logfire.info(
+        f"Created {settings.QDRANT_MODE} Qdrant collection "
+        f"'{settings.QDRANT_COLLECTION}' ({dim}-dim, Cosine)."
+    )
 
 def save_processed_locally(data:dict,source_type:str,filename:str)->str:
     folder = os.path.join(PROCESSED_DATA_DIR,source_type)
@@ -92,6 +104,7 @@ def process_file(file_path: str, filename: str, source_type: str):
             local_path = save_processed_locally(processed_data, source_type, filename)
             logfire.info(f"Saved processed data → {local_path}")
             with logfire.span("Vectorizing & Indexing"):
+                _ensure_collection()
                 _assert_collection_dimension()
                 embeddings = embed_texts(chunks)
                 points = [
@@ -156,19 +169,7 @@ def run_universal_ingestion(base_dir: str, explicit_source_type: str = None, wip
                     logfire.info(f"Collection '{settings.QDRANT_COLLECTION}' deleted.")
 
         # Recreate collection — dimension resolved at runtime after embedding model probe
-        if not qdrant_client.collection_exists(settings.QDRANT_COLLECTION):
-            dim = get_embedding_dim()
-            qdrant_client.create_collection(
-                collection_name=settings.QDRANT_COLLECTION,
-                vectors_config=models.VectorParams(
-                    size=dim,
-                    distance=models.Distance.COSINE,
-                ),
-            )
-            logfire.info(
-                f"Created collection '{settings.QDRANT_COLLECTION}' "
-                f"({dim}-dim, Cosine)."
-            )
+        _ensure_collection()
         
 
         # Route to sub-folders or treat the whole dir as one source

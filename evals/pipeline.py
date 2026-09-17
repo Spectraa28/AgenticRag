@@ -15,8 +15,9 @@ import logfire
 
 API_URL = "http://localhost:8000/query"
 RESPONSE_TRUNCATE = 300
-DELAY_BETWEEN_CALLS = 10   # seconds — stays within Groq RPM on the main key
+DELAY_BETWEEN_CALLS = 15   # seconds — each query uses guardrail, planner, and responder calls
 REQUEST_TIMEOUT = 120      # seconds — guardrails + LangGraph + Groq can take >60s
+MAX_RATE_LIMIT_RETRIES = 3
 
 
 def _api_headers() -> dict[str, str]:
@@ -66,12 +67,22 @@ def run_pipeline(golden_dataset: dict, progress_callback=None) -> dict:
                 domain=sample.get("domain", ""),
             ):
                 try:
-                    resp = requests.post(
-                        API_URL,
-                        json={"q": question, "thread_id": f"eval_run_{i}"},
-                        headers=_api_headers(),
-                        timeout=REQUEST_TIMEOUT,
-                    )
+                    for retry in range(MAX_RATE_LIMIT_RETRIES + 1):
+                        resp = requests.post(
+                            API_URL,
+                            json={"q": question, "thread_id": f"eval_run_{i}"},
+                            headers=_api_headers(),
+                            timeout=REQUEST_TIMEOUT,
+                        )
+                        if resp.status_code != 429 or retry == MAX_RATE_LIMIT_RETRIES:
+                            break
+                        retry_after = int(resp.headers.get("Retry-After", "30"))
+                        logfire.warning(
+                            "LLM provider throttled evaluation query; backing off",
+                            attempt=retry + 1,
+                            wait_seconds=retry_after,
+                        )
+                        time.sleep(retry_after)
                     resp.raise_for_status()
                     data = resp.json()
 

@@ -39,6 +39,11 @@ def get_langchain_llm(feature: str = "rag") -> ChatOpenAI:
         base_url=PORTKEY_GATEWAY_URL,
         model=MODEL,
         temperature=0,
+        # Groq can briefly reject bursts from an evaluation run.  Retrying at
+        # the model boundary preserves the normal LangChain interface and does
+        # not require callers to understand provider-specific errors.
+        max_retries=3,
+        timeout=90,
         default_headers=createHeaders(
             api_key=settings.PORTKEY_API_KEY,
             metadata={
