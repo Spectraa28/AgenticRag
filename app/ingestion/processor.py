@@ -23,6 +23,29 @@ qdrant_client = QdrantClient(
     api_key=settings.QDRANT_API_KEY,
 )
 
+
+def _source_filter(source_type: str, filename: str) -> models.Filter:
+    return models.Filter(
+        must=[
+            models.FieldCondition(key="source", match=models.MatchValue(value=filename)),
+            models.FieldCondition(key="source_type", match=models.MatchValue(value=source_type)),
+        ]
+    )
+
+
+def _assert_collection_dimension() -> None:
+    """Reject model/collection dimension drift before indexing corrupts a run."""
+    collection = qdrant_client.get_collection(settings.QDRANT_COLLECTION)
+    vectors = collection.config.params.vectors
+    configured_size = vectors.size if hasattr(vectors, "size") else None
+    active_size = get_embedding_dim()
+    if configured_size != active_size:
+        raise RuntimeError(
+            f"Collection '{settings.QDRANT_COLLECTION}' uses {configured_size}-dim vectors, "
+            f"but the active embedding model produces {active_size}. Re-ingest with --wipe "
+            "after selecting one embedding provider."
+        )
+
 def save_processed_locally(data:dict,source_type:str,filename:str)->str:
     folder = os.path.join(PROCESSED_DATA_DIR,source_type)
     os.makedirs(folder,exist_ok=True)
@@ -49,16 +72,16 @@ def process_file(file_path: str, filename: str, source_type: str):
                 full_text = parse_office(file_path)
             else:
                 logfire.warning(f"Skipping unsupported file type: {filename}")
-                return
+                return {"filename": filename, "status": "skipped", "reason": "Unsupported file type"}
 
             if not full_text or not full_text.strip():
                 logfire.warning(f"No text extracted from {filename} — skipping.")
-                return
+                return {"filename": filename, "status": "skipped", "reason": "No extractable text"}
 
             # 2. Chunk text
             chunks = chunk_text(full_text)
             if not chunks:
-                return
+                return {"filename": filename, "status": "skipped", "reason": "No chunks created"}
 
             # 3. Save processed metadata locally
             processed_data = {
@@ -69,10 +92,15 @@ def process_file(file_path: str, filename: str, source_type: str):
             local_path = save_processed_locally(processed_data, source_type, filename)
             logfire.info(f"Saved processed data → {local_path}")
             with logfire.span("Vectorizing & Indexing"):
+                _assert_collection_dimension()
                 embeddings = embed_texts(chunks)
                 points = [
                     models.PointStruct(
-                        id=str(uuid.uuid4()),
+                        # Stable IDs make re-ingestion idempotent for unchanged chunks.
+                        id=str(uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"{source_type}:{filename}:{index}:{chunk}",
+                        )),
                         vector=vector,
                         payload={
                             "text": chunk,
@@ -80,17 +108,29 @@ def process_file(file_path: str, filename: str, source_type: str):
                             "source_type": source_type,
                         },
                     )
-                    for chunk, vector in zip(chunks, embeddings)
+                    for index, (chunk, vector) in enumerate(zip(chunks, embeddings))
                 ]
+
+                # Replace a source atomically enough for this single-writer CLI:
+                # old chunks disappear before the new set is upserted, preventing
+                # duplicates when a file changes or the chunking strategy changes.
+                qdrant_client.delete(
+                    collection_name=settings.QDRANT_COLLECTION,
+                    points_selector=models.FilterSelector(
+                        filter=_source_filter(source_type, filename)
+                    ),
+                )
 
                 qdrant_client.upsert(
                     collection_name=settings.QDRANT_COLLECTION,
                     points=points,
                 )
                 logfire.info(f"Indexed {len(points)} points to Qdrant from {filename}.")
+                return {"filename": filename, "status": "indexed", "chunks": len(points)}
 
         except Exception as e:
             logfire.error(f"Failed to process {filename}: {e}")
+            return {"filename": filename, "status": "error", "reason": str(e)}
             
                      
 def process_directory(dir_path: str, source_type: str):

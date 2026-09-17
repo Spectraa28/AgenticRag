@@ -19,6 +19,11 @@ DELAY_BETWEEN_CALLS = 10   # seconds — stays within Groq RPM on the main key
 REQUEST_TIMEOUT = 120      # seconds — guardrails + LangGraph + Groq can take >60s
 
 
+def _api_headers() -> dict[str, str]:
+    api_key = os.getenv("API_KEY")
+    return {"X-API-Key": api_key} if api_key else {}
+
+
 
 
 def detect_tool(thought_process: list) -> str:
@@ -64,6 +69,7 @@ def run_pipeline(golden_dataset: dict, progress_callback=None) -> dict:
                     resp = requests.post(
                         API_URL,
                         json={"q": question, "thread_id": f"eval_run_{i}"},
+                        headers=_api_headers(),
                         timeout=REQUEST_TIMEOUT,
                     )
                     resp.raise_for_status()

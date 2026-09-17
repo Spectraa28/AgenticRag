@@ -104,10 +104,11 @@ if prompt := st.chat_input("Ask about your documentation..."):
                     if sources:
                         with st.expander("📄 View Retrieved Context (Sources)"):
                             for i, source in enumerate(sources):
-                                # Create a preview title for each chunk
-                                preview = source[:100].replace("\n", " ") + "..."
-                                with st.expander(f"Chunk {i+1}: {preview}"):
-                                    st.info(source)
+                                content = source.get("content", "")
+                                label = source.get("source", "Unknown source")
+                                preview = content[:100].replace("\n", " ") + "..."
+                                with st.expander(f"{label} — chunk {i+1}: {preview}"):
+                                    st.info(content)
                 except Exception as e:
                     logfire.error(f"❌ UI-Backend Connection Failed: {e}")
                     status.update(label="❌ Connection Failed", state="error")

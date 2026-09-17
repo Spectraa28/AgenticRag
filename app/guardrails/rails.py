@@ -3,7 +3,7 @@ from langchain_groq import ChatGroq
 from nemoguardrails import RailsConfig, LLMRails
 
 from app.config import settings
-from app.guardrails.colang_rules import COLANG_CONTENT, YAML_CONTENT, RAIL_INDICATORS
+from app.guardrails.colang_rules import COLANG_CONTENT, YAML_CONTENT, RAIL_RESPONSES
 
 
 _rails: LLMRails | None = None
@@ -18,8 +18,8 @@ def initialize_rails() -> None:
     global _rails
 
     guard_llm = ChatGroq(
-        api_key=settings.GROK_API_KEY,
-        model="llama-3.1-8b-instant",
+        api_key=settings.GROQ_API_KEY,
+        model=settings.GUARDRAIL_MODEL,
         temperature=0
     )
 
@@ -53,7 +53,11 @@ def guard(message: str) -> tuple[bool, str | None]:
         # NeMo returns {'role': 'assistant', 'content': '...'} — extract text
         content = result.get("content", "") if isinstance(result, dict) else str(result)
 
-        fired = any(indicator in content for indicator in RAIL_INDICATORS)
+        normalized_content = " ".join(content.split()).casefold()
+        fired = any(
+            normalized_content == " ".join(response.split()).casefold()
+            for response in RAIL_RESPONSES
+        )
 
         if fired:
             logfire.info(f"🛡️ Guardrails fired | query='{message[:80]}'")

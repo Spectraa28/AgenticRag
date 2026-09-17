@@ -15,11 +15,11 @@ from app.config import settings
 # To edit the fallback/cache/retry behavior, update the saved config
 # in the Portkey dashboard directly.
 # ============================================================
-PORTKEY_CONFIG_SLUG = settings.PORTKEY_CONFIG_SLUG  # e.g. "pc-xxxxxxx"
+PORTKEY_CONFIG_SLUG = settings.PORTKEY_CONFIG_SLUG  # optional dashboard configuration
+MODEL = f"@{settings.GROQ_SLUG}/{settings.GROQ_MODEL}"
 
 portkey_client = Portkey(
     api_key=settings.PORTKEY_API_KEY,
-    config=PORTKEY_CONFIG_SLUG
 )
 
 
@@ -37,11 +37,10 @@ def get_langchain_llm(feature: str = "rag") -> ChatOpenAI:
     return ChatOpenAI(
         api_key=settings.PORTKEY_API_KEY,
         base_url=PORTKEY_GATEWAY_URL,
-        model=f"@{settings.GROQ_SLUG}/llama-3.3-70b-versatile",
+        model=MODEL,
         temperature=0,
         default_headers=createHeaders(
             api_key=settings.PORTKEY_API_KEY,
-            config=PORTKEY_CONFIG_SLUG,
             metadata={
                 "feature": feature,
                 "_user": "rag-system",

@@ -112,8 +112,8 @@ if prompt := st.chat_input("Ask about your documentation..."):
             if sources:
                 with st.expander(f"📄 Retrieved Context ({len(sources)} chunks)"):
                     for i, source in enumerate(sources):
-                        st.caption(f"Chunk {i + 1}")
-                        st.info(source)
+                        st.caption(f"{source.get('source', 'Unknown source')} — chunk {i + 1}")
+                        st.info(source.get("content", ""))
             else:
                 st.caption("ℹ️ No context retrieved — conversational response.")
 

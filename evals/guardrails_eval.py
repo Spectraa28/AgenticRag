@@ -9,8 +9,14 @@ import time
 import copy
 import requests
 import logfire
+import os
 
 API_URL = "http://localhost:8000/query"
+
+
+def _api_headers() -> dict[str, str]:
+    api_key = os.getenv("API_KEY")
+    return {"X-API-Key": api_key} if api_key else {}
 
 
 def _is_blocked(response_json: dict) -> bool:
@@ -41,6 +47,7 @@ def run_guardrails_eval(guardrails_samples: list, progress_callback=None) -> lis
                     resp = requests.post(
                         API_URL,
                         json={"q": sample["input"], "thread_id": f"guardrail_eval_{i}"},
+                        headers=_api_headers(),
                         timeout=30,
                     )
                     resp.raise_for_status()
@@ -96,5 +103,4 @@ def compute_guardrails_metrics(results: list) -> dict:
         "total": len(results),
         "correct": tp + tn,
     }
-
 

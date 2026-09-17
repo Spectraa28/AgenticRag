@@ -3,6 +3,7 @@ fastapi                     # High-performance web framework for the API
 uvicorn[standard]           # ASGI server to run the FastAPI app
 python-dotenv               # For loading configuration from .env files
 requests                    # HTTP library for internal/external API calls
+python-multipart            # Multipart uploads for the document-ingestion endpoint
 streamlit                   # Frontend dashboard for the chat interface
 numpy                       # Numerical processing
 pytz                        # Timezone handling for logs
